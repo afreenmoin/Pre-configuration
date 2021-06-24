@@ -1,0 +1,109 @@
+#Define provider as AWS
+provider "aws" {
+  profile = "default"
+  region  = "us-west-1"
+  #Add AWS key here
+  access_key = "XXXXXXXXX"
+  secret_key = "XXXXXXXXXX"
+}
+#Define VPC
+resource "aws_vpc" "Primooz_VPC" {
+  cidr_block = "10.1.0.0/16"
+  tags = {
+    Name = "WebServerVPC"}
+}
+# Define Subnets 
+resource "aws_subnet" "Web_Subnet_A" {
+  vpc_id     = aws_vpc.Primooz_VPC.id
+  cidr_block = "10.1.1.0/24"
+  tags = {
+    Name = "WebServerSubnet"}
+}
+#Add Internet Gateway for Outbound Traffic
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.Primooz_VPC.id
+
+  tags = {
+    Name = "WebServerIgw"
+  }
+}
+#Edit Route Table 
+resource "aws_route_table" "webserver1" {
+  vpc_id = aws_vpc.Primooz_VPC.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+  tags = {
+    Name = "WebServerRT"
+  }
+}
+#Associate subnet with Route Table
+resource "aws_route_table_association" "webserver1" {
+  subnet_id      = aws_subnet.Web_Subnet_A.id
+  route_table_id = aws_route_table.webserver1.id
+}
+#Edit Default Security Group to allow 'ssh' and 'http' traffic
+resource "aws_security_group" "webserver1" {
+  name        = "allow_ssh_http"
+  description = "Allow SSH_HTTP"
+  vpc_id     = aws_vpc.Primooz_VPC.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "http"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+#Define key to access the Web Instance
+resource "tls_private_key" "webserver1" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+resource "aws_key_pair" "webserver1" {
+  key_name   = "webserver1"
+  public_key = tls_private_key.webserver1.public_key_openssh
+}
+#Define WebServer Instance
+resource "aws_instance" "Webserver1" {
+  key_name      = aws_key_pair.webserver1.key_name
+  ami           = "ami-01311df3780ebd33e"
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.Web_Subnet_A.id
+  security_groups    = [aws_security_group.webserver1.id]
+  associate_public_ip_address  = true
+
+  connection {
+    type        = "ssh"
+    user        = "ec2-user"
+    private_key = tls_private_key.webserver1.private_key_pem
+    host        = self.public_ip
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo amazon-linux-extras enable nginx1.12",
+      "sudo yum -y install nginx",
+      "sudo systemctl start nginx"
+    ]
+  }
+  provisioner "local-exec" {
+    command = "echo ${aws_instance.Webserver1.public_ip} > ip_address.txt"
+  }
+}
